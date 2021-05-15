@@ -5,6 +5,7 @@ import pandas as pd
 from model import *
 import pickle
 import preprocess
+import utilities
 
 
 # Parsing script arguments
@@ -15,29 +16,29 @@ args = parser.parse_args()
 # Reading input TSV
 # data = pd.read_csv('test.tsv', sep="\t")
 data = preprocess.run(args.tsv_path, train=False)
-# features = ['budget', 'popularity', 'vote_average', 'vote_count']
-# X, y = split_covariates_from_target(args.tsv_path,'revenue',features)
-# X, y = split_covariates_from_target('test.tsv','revenue',features)
 
-# X_train = X_train[features].to_numpy(dtype=object)
-# y_train = y_train.to_numpy(dtype=float)
-# X = X[features].to_numpy(dtype=object)
+models = ['linear_model','ridge_model','custom_model']
+for m in models:
+    infile = open(f'saved_models/{m}.pkl','rb')
+# result = pickle.load(infile)
+    model = pickle.load(infile)
+    beta_hat, b_hat = model[0],model[1]
 
-infile = open('beta_hat.pkl','rb')
-beta_hat = pickle.load(infile)
-y_train_pred = np.dot(data, beta_hat)
+    prediction_df = pd.DataFrame(columns=['id', 'revenue'])
+    prediction_df['id'] = data['id']
+    data_1 = data[[x for x in data if x != 'id']]
+    X, _ = split_covariates_from_target(data_1, 'revenue')
+    print("running prediction...")
+    # prediction_df['revenue'] = model.predict(X)
+    y_test_pred = np.dot(X, beta_hat.T)+b_hat
+    prediction_df['revenue'] = y_test_pred
+    ####
 
-# Example:
-prediction_df = pd.DataFrame(columns=['id', 'revenue'])
-prediction_df['id'] = data['id']
-prediction_df['revenue'] = y_train_pred
-####
+    prediction_df.to_csv("prediction.csv", index=False, header=False)
 
-prediction_df.to_csv("prediction.csv", index=False, header=False)
-
-prediction = prediction_df['revenue'].values.ravel()
-res = root_mean_squared_log_error(data['revenue'], prediction)
-print("RMSLE is: {:.6f}".format(res))
+    prediction = prediction_df['revenue'].values.ravel()
+    res = root_mean_squared_log_error(data_1['revenue'].values, prediction)
+    print(f"RMSLE of {m} is: {round(res,3)}")
 
 
 ### Utility function to calculate RMSLE

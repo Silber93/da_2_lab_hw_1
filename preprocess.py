@@ -6,26 +6,15 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 import pickle
 
-TRAIN_FILENAME = 'train.tsv'
-TEST_FILENAME = 'test.tsv'
+TRAIN_FILEPATH = 'data/train.tsv'
+TEST_FILEPATH = 'data/test.tsv'
 
 
-COLS_FOR_MODEL = ['budget', 'original_language', 'popularity', 'runtime', 'spoken_languages', 'vote_count',
-                  'production_companies', 'vote_average', 'genres', 'cast', 'crew', 'day_of_year', 'year', 'revenue']
+COLS_FOR_MODEL = ['id', 'budget', 'original_language', 'popularity', 'runtime', 'vote_count',
+                 'vote_average', 'genres', 'day_of_year', 'year', 'revenue']
 
-COLS_TO_PARSE = {'genres': "'name': ",
-                 'spoken_languages': "'iso_639_1': ",
-                 'cast': "'name': ",
-                 'crew': "'Director', 'name': ",
-                 'production_companies': "'name': "}
-
-CATEGORICAL_FEATURES = ['original_language', 'genres', 'production_companies', 'spoken_languages', 'cast', 'director']
-
-
-def tsv_to_df(filepath: str):
-  file_savename = filepath.replace('.tsv', '') + '.csv'
-  df = pd.read_csv(filepath, sep='\t')
-  return df
+COLS_TO_PARSE = {'genres': "'name': "}
+CATEGORICAL_FEATURES = ['original_language','genres']
 
 
 def col_to_vec(df):
@@ -39,8 +28,8 @@ def col_to_vec(df):
       row = row.split(COLS_TO_PARSE[col])[1:]
       row = [x.split(',')[0].replace('\'', '').replace('}', '').replace(']', '') for x in row]
       new_col.append(tuple(row))
+    df = df.drop(col, axis=1)
     if col == 'crew':
-      df = df.drop('crew', axis=1)
       col = 'director'
     df[col] = new_col
   return df
@@ -50,6 +39,8 @@ def vec_to_features(test_preprocessed, train_preprocessed=None, train=True):
   print("vectorizing categorical features...")
   if train:
     d = {}
+    cast_dict = {}
+    directors_dict = {}
     for df in [train_preprocessed, test_preprocessed]:
       for col in CATEGORICAL_FEATURES:
         if col == 'crew':
@@ -60,17 +51,31 @@ def vec_to_features(test_preprocessed, train_preprocessed=None, train=True):
         for row in rows:
           if col == 'cast':
             row = row[:2]
+          if col == 'original_language':
+            if row not in d[col]:
+              d[col][row] = len(d[col])
+            continue
           for val in row:
+            if col == 'cast':
+              cast_dict[val] = 1 if val not in cast_dict.keys() else cast_dict[val]+1
+            if col == 'director':
+              directors_dict[val] = 1 if val not in directors_dict.keys() else directors_dict[val]+1
             if val == '':
               continue
             if val not in d[col]:
               d[col][val] = len(d[col])
-    with open('feature_dictionary.pickle', 'wb') as handle:
+    for key in cast_dict.keys():
+      if cast_dict[key] < 20:
+        del d['cast'][key]
+    for key in directors_dict.keys():
+      if directors_dict[key] < 13:
+        del d['director'][key]
+    with open('data/feature_dictionary.pickle', 'wb') as handle:
       pickle.dump(d, handle, protocol=pickle.HIGHEST_PROTOCOL)
     ret_df = train_preprocessed.copy()
   else:
     ret_df = test_preprocessed.copy()
-    with open('feature_dictionary.pickle', 'rb') as handle:
+    with open('data/feature_dictionary.pickle', 'rb') as handle:
       d = pickle.load(handle)
   for col in CATEGORICAL_FEATURES:
     if col == 'crew':
@@ -80,7 +85,7 @@ def vec_to_features(test_preprocessed, train_preprocessed=None, train=True):
     for row in rows:
       dummy_vals_row = [0] * len(d[col])
       if col == 'cast':
-        row = row[:4]
+        row = row[:2]
       for val in row:
         if val == '':
           continue
@@ -93,7 +98,6 @@ def vec_to_features(test_preprocessed, train_preprocessed=None, train=True):
     dummy_df = pd.DataFrame(data=dummy_vals_matrix, columns=col_names)
     ret_df = pd.concat([ret_df, dummy_df], axis=1)
     ret_df = ret_df.drop(col, axis=1)
-  ret_df = mean_impute(ret_df)
   return ret_df
 
 
@@ -121,32 +125,42 @@ def mean_impute(df):
   print('performing imputation...')
   df['budget'] = [np.nan if x <= 100 else x for x in df['budget'].values]
   df['revenue'] = [np.nan if x <= 100 else x for x in df['revenue'].values]
-  Y = df[['revenue']]
-  X_transformed = df['budget'].mean()
-  df['budget'] = [X_transformed if np.isnan(x) else x for x in df['budget'].values]
-  X = df[[x for x in df.columns if x != 'revenue']].values
-  Y_transformed = df['revenue'].mean()
-  scaler = StandardScaler()
-  X_scaled = scaler.fit_transform(X)
-  df = pd.DataFrame(X_scaled, columns=[x for x in df.columns if x != 'revenue'])
-  df['revenue'] = [Y_transformed if np.isnan(x) else x for x in Y['revenue'].values]
-  # df = pd.concat([df, Y], axis=1)
+  mean_budget = df['budget'].mean()
+  df['budget'] = [mean_budget if np.isnan(x) else x for x in df['budget'].values]
+  mean_revenue = df['revenue'].mean()
+  df['revenue'] = [mean_revenue if np.isnan(x) else x for x in df['revenue'].values]
   return df
 
 
-def run(test_filename, train_filename=None, train=True):
+def scale(df):
+  scaler = StandardScaler()
+  X = df[[x for x in df.columns if x not in ['id', 'revenue']]].values
+  X_scaled = scaler.fit_transform(X)
+  Y = df[['revenue']]
+  id_df = df[['id']]
+  df = pd.DataFrame(X_scaled, columns=[x for x in df.columns if x not in ['id', 'revenue']])
+  df = pd.concat([id_df, df, Y], axis=1)
+  return df
+
+
+def run(test_filename=None, train_filename=None, train=True):
+  print("\t----PREPROCESS----")
+  test_filename = TEST_FILEPATH if test_filename is None else test_filename
+  train_filename = TRAIN_FILEPATH if train_filename is None else train_filename
   print(f'running preprocess ({"train" if train else "test"})...')
   train_preprocessed = None
-  test_df = tsv_to_df(test_filename)
+  test_df = pd.read_csv(test_filename, sep='\t')
   test_preprocessed = col_to_vec(test_df)
   if train:
-    train_df = tsv_to_df(train_filename)
+    train_df = pd.read_csv(train_filename, sep='\t')
     train_preprocessed = col_to_vec(train_df)
   df_ready = vec_to_features(test_preprocessed, train_preprocessed, train)
+  df_ready = mean_impute(df_ready)
+  df_ready = scale(df_ready)
+  df_ready.dropna(inplace=True, how='any')
+  # df_ready.dropna(inplace=True, subset=[target], how='any')
+  print(f"preprocess completed, frame shape: {df_ready.shape}\n")
   return df_ready
-
-# df_ready = run(TEST_FILENAME, TRAIN_FILENAME, train=False)
-# print(df_ready)
 
 
 
